@@ -1,0 +1,1483 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Invedictor</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: {
+                            50: '#eff6ff', 100: '#dbeafe', 200: '#bfdbfe', 300: '#93c5fd',
+                            400: '#60a5fa', 500: '#3b82f6', 600: '#2563eb', 700: '#1d4ed8'
+                        },
+                        secondary: '#10b981',
+                        accent: '#8b5cf6',
+                        dark: '#0f172a',
+                    }
+                }
+            }
+        }
+    </script>
+    <!-- React & ReactDOM -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <!-- Babel -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- Icons (Lucide) -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- IDB Library -->
+    <script src="https://unpkg.com/idb@7/build/umd.js"></script>
+    <!-- Internal DB Wrapper -->
+    <script>
+            (function () {
+                const DB_NAME = 'InventoryPredictorDB';
+                const DB_VERSION = 1;
+
+                const initDB = () => {
+                    if (!window.idb) {
+                        console.error("idb library not loaded!");
+                        return null;
+                    }
+
+                    const dbPromise = idb.openDB(DB_NAME, DB_VERSION, {
+                        upgrade(db) {
+                            if (!db.objectStoreNames.contains('users')) {
+                                db.createObjectStore('users', { keyPath: 'userId' });
+                            }
+                            if (!db.objectStoreNames.contains('products')) {
+                                const productStore = db.createObjectStore('products', { keyPath: 'productId' });
+                                productStore.createIndex('userId', 'userId', { unique: false });
+                            }
+                            if (!db.objectStoreNames.contains('sales')) {
+                                const salesStore = db.createObjectStore('sales', { keyPath: 'saleId', autoIncrement: true });
+                                salesStore.createIndex('productId', 'productId', { unique: false });
+                                salesStore.createIndex('userId', 'userId', { unique: false });
+                                salesStore.createIndex('date', 'date', { unique: false });
+                            }
+                            if (!db.objectStoreNames.contains('predictions')) {
+                                const predStore = db.createObjectStore('predictions', { keyPath: 'predictionId', autoIncrement: true });
+                                predStore.createIndex('productId', 'productId', { unique: false });
+                            }
+                            console.log("DB Upgraded/Created");
+                        },
+                    });
+
+                    return {
+                        async get(store, key) { return (await dbPromise).get(store, key); },
+                        async getAll(store) { return (await dbPromise).getAll(store); },
+                        async put(store, val) { return (await dbPromise).put(store, val); },
+                        async add(store, val) { return (await dbPromise).add(store, val); },
+                        async delete(store, key) { return (await dbPromise).delete(store, key); },
+                        async getFromIndex(store, index, key) { return (await dbPromise).getAllFromIndex(store, index, key); }
+                    };
+                };
+
+                // Initialize DB and expose it globally
+                window.DB = initDB();
+
+                // Re-attempt initialization if idb was slow to load
+                if (!window.DB) {
+                    const interval = setInterval(() => {
+                        if (window.idb) {
+                            window.DB = initDB();
+                            if (window.DB) clearInterval(interval);
+                        }
+                    }, 100);
+                    setTimeout(() => clearInterval(interval), 5000); // Stop after 5s
+                }
+            })();
+    </script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+
+        .glass {
+            background: rgba(255, 255, 255, 0.7);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .liquid-flow {
+            filter: url('#goo');
+        }
+
+        @keyframes organic-move {
+            0% {
+                transform: translate(0, 0) scale(1);
+            }
+
+            33% {
+                transform: translate(30px, -50px) scale(1.1);
+            }
+
+            66% {
+                transform: translate(-20px, 20px) scale(0.9);
+            }
+
+            100% {
+                transform: translate(0, 0) scale(1);
+            }
+        }
+
+        .liquid-blob {
+            position: absolute;
+            border-radius: 50%;
+            filter: blur(20px);
+            animation: organic-move 10s infinite alternate ease-in-out;
+        }
+
+        .ai-matte-glass {
+            background: rgba(15, 23, 42, 0.8);
+            backdrop-filter: blur(25px) saturate(180%);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+    </style>
+</head>
+
+<body class="bg-slate-50 text-slate-900">
+    <div id="root"></div>
+
+    <svg style="visibility: hidden; position: absolute;" width="0" height="0" xmlns="http://www.w3.org/2000/svg"
+        version="1.1">
+        <defs>
+            <filter id="goo">
+                <feGaussianBlur in="SourceGraphic" stdDeviation="15" result="blur" />
+                <feColorMatrix in="blur" mode="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 25 -12"
+                    result="goo" />
+                <feComposite in="SourceGraphic" in2="goo" operator="atop" />
+            </filter>
+        </defs>
+    </svg>
+
+    <script type="text/babel">
+        const { useState, useEffect, useMemo, useRef } = React;
+
+        // --- Icons ---
+        const Icon = ({ name, className = "w-5 h-5" }) => {
+            useEffect(() => {
+                lucide.createIcons();
+            }, [name]);
+            return <i data-lucide={name} className={className}></i>;
+        };
+
+        const AIAssistant = ({ products = [], sales = [] }) => {
+            const [isOpen, setIsOpen] = useState(false);
+            const [query, setQuery] = useState('');
+            const [messages, setMessages] = useState([
+                { role: 'ai', text: "Hello! I am your Invedictor Assistant. I can help clarify your doubts about inventory management, sales logging, or predictions. How can I assist you today?" }
+            ]);
+            const [isTyping, setIsTyping] = useState(false);
+
+            const handleAsk = (e) => {
+                e.preventDefault();
+                if (!query.trim()) return;
+
+                const userQuery = query.trim();
+                const newMessages = [...messages, { role: 'user', text: userQuery }];
+                setMessages(newMessages);
+                setQuery('');
+                setIsTyping(true);
+
+                // Simulate AI "thinking"
+                setTimeout(() => {
+                    const q = userQuery.toLowerCase();
+                    let response = "";
+
+                    // Contextual Data
+                    const lowStockItems = products.filter(p => p.currentStock <= p.safetyStock);
+                    const totalProducts = products.length;
+                    const totalSalesUnits = sales.reduce((sum, s) => sum + s.quantity, 0);
+
+                    // Knowledge Base Heuristics
+                    if (q.includes('safety stock')) {
+                        response = "Safety Stock is a buffer of inventory kept to avoid stockouts. You can set this for each product. Currently, you have " + lowStockItems.length + " items that have hit or dropped below their safety stock levels.";
+                    } else if (q.includes('log') || q.includes('sales')) {
+                        response = "Logging sales is crucial! You've logged " + totalSalesUnits + " units in total. Consistent daily logging allows my predictive engine to reach up to 95% accuracy.";
+                    } else if (q.includes('prediction') || q.includes('forecast')) {
+                        response = "I use Linear Regression to project your future sales. Navigate to the 'Predictions' tab, select a product, and I'll tell you how much to reorder based on " + sales.length + " logged data points.";
+                    } else if (q.includes('status') || q.includes('inventory')) {
+                        response = "Your shop currently has " + totalProducts + " products tracked. " + (lowStockItems.length > 0 ? "Alert: " + lowStockItems.length + " items are low on stock and need attention." : "All stock levels looks healthy!");
+                    } else if (q.includes('help') || q.includes('how to')) {
+                        response = "I can help you with: 1. Managing products, 2. Logging sales, 3. Interpreting predictions, and 4. Analyzing reports. What would you like to know more about?";
+                    } else if (q.includes('who built') || q.includes('who are you')) {
+                        response = "I am the Invedictor AI, built to give small shop owners the superpowers of advanced data science. I was 'MADE IN INDIA' with precision.";
+                    } else {
+                        response = "I'm still learning about that! You can ask me things like 'What is my inventory status?' or 'How do predictions work?'.";
+                    }
+
+                    setMessages(prev => [...prev, { role: 'ai', text: response }]);
+                    setIsTyping(false);
+                }, 1000);
+            };
+
+            const handleClearChat = () => {
+                setMessages([
+                    { role: 'ai', text: "Chat history cleared. How else can I help you today?" }
+                ]);
+            };
+
+            return (
+                <div className="fixed bottom-8 right-8 z-[200]">
+                    {!isOpen ? (
+                        <button
+                            onClick={() => setIsOpen(true)}
+                            className="w-16 h-16 bg-slate-900 border border-slate-700 text-white rounded-full flex items-center justify-center shadow-2xl hover:scale-110 active:scale-95 transition-all group overflow-hidden"
+                        >
+                            <div className="absolute inset-0 liquid-flow opacity-50">
+                                <div className="liquid-blob w-12 h-12 bg-white" style={{ top: '10%', left: '10%' }}></div>
+                                <div className="liquid-blob w-10 h-10 bg-white" style={{ bottom: '10%', right: '10%', animationDelay: '-3s' }}></div>
+                            </div>
+                            <Icon name="sparkles" className="relative w-6 h-6 animate-pulse" />
+                        </button>
+                    ) : (
+                        <div className="w-[380px] h-[550px] ai-matte-glass rounded-[40px] shadow-3xl overflow-hidden flex flex-col animate-in slide-in-from-bottom-10 fade-in duration-500 border border-white/10">
+                            {/* Liquid BG */}
+                            <div className="absolute inset-0 z-0 liquid-flow opacity-30 pointer-events-none">
+                                <div className="liquid-blob w-40 h-40 bg-slate-900" style={{ top: '-10%', left: '10%' }}></div>
+                                <div className="liquid-blob w-32 h-32 bg-slate-900" style={{ bottom: '20%', right: '-10%', animationDelay: '-5s' }}></div>
+                                <div className="liquid-blob w-24 h-24 bg-slate-900" style={{ top: '40%', left: '50%', animationDelay: '-2s' }}></div>
+                            </div>
+
+                            <div className="relative z-10 flex flex-col h-full">
+                                <div className="p-8 flex items-center justify-between border-b border-white/5 bg-white/5 backdrop-blur-sm">
+                                    <div className="flex items-center space-x-3">
+                                        <div className="w-10 h-10 bg-white/10 rounded-2xl flex items-center justify-center text-white">
+                                            <Icon name="sparkles" />
+                                        </div>
+                                        <div>
+                                            <h3 className="text-white font-bold text-lg">AI Assistant</h3>
+                                            <div className="flex items-center space-x-2">
+                                                <div className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse"></div>
+                                                <span className="text-[10px] text-white/40 font-bold uppercase tracking-wider">Neural Live</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div className="flex items-center space-x-2">
+                                        <button
+                                            onClick={handleClearChat}
+                                            title="Clear History"
+                                            className="p-2 text-white/40 hover:text-red-400 transition-colors"
+                                        >
+                                            <Icon name="trash-2" className="w-5 h-5" />
+                                        </button>
+                                        <button onClick={() => setIsOpen(false)} className="p-2 text-white/40 hover:text-white transition-colors">
+                                            <Icon name="x" className="w-5 h-5" />
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <div className="flex-1 p-6 overflow-y-auto space-y-4">
+                                    {messages.map((m, i) => (
+                                        <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                                            <div className={`max-w-[80%] p-4 rounded-2xl text-sm leading-relaxed ${m.role === 'user'
+                                                ? 'bg-white/20 text-white rounded-tr-none'
+                                                : 'bg-white/5 text-white/80 border border-white/5 rounded-tl-none'
+                                                }`}>
+                                                {m.text}
+                                            </div>
+                                        </div>
+                                    ))}
+                                    {isTyping && (
+                                        <div className="flex justify-start">
+                                            <div className="bg-white/5 p-4 rounded-2xl rounded-tl-none border border-white/5 flex space-x-1">
+                                                <div className="w-1 h-1 bg-white/40 rounded-full animate-bounce"></div>
+                                                <div className="w-1 h-1 bg-white/40 rounded-full animate-bounce [animation-delay:-0.3s]"></div>
+                                                <div className="w-1 h-1 bg-white/40 rounded-full animate-bounce [animation-delay:-0.5s]"></div>
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+
+                                <div className="p-8 bg-white/5 backdrop-blur-xl border-t border-white/5">
+                                    <form onSubmit={handleAsk} className="relative">
+                                        <input
+                                            type="text"
+                                            value={query}
+                                            onChange={(e) => setQuery(e.target.value)}
+                                            placeholder="Clarify your doubts..."
+                                            className="w-full bg-white/10 border border-white/10 text-white rounded-2xl px-6 py-4 focus:outline-none focus:ring-2 focus:ring-white/20 placeholder:text-white/20 text-sm"
+                                        />
+                                        <button className="absolute right-3 top-3 p-2 bg-white text-slate-900 rounded-xl hover:scale-105 active:scale-95 transition-all">
+                                            <Icon name="send" className="w-4 h-4" />
+                                        </button>
+                                    </form>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
+        // --- Components ---
+
+        const SidebarItem = ({ icon, label, id, active, onClick }) => (
+            <button
+                onClick={() => onClick(id)}
+                className={`w-full flex items-center space-x-3 px-4 py-3 rounded-xl transition-all duration-200 ${active
+                    ? 'bg-primary-600 text-white shadow-lg shadow-primary-200'
+                    : 'text-slate-500 hover:bg-white hover:text-primary-600'
+                    }`}
+            >
+                <Icon name={icon} />
+                <span className="font-medium text-sm">{label}</span>
+            </button>
+        );
+
+        const StatCard = ({ label, value, icon, trend, color }) => (
+            <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 flex items-center space-x-4">
+                <div className={`p-3 rounded-xl bg-${color}-50 text-${color}-600`}>
+                    <Icon name={icon} />
+                </div>
+                <div>
+                    <p className="text-slate-500 text-xs font-semibold uppercase tracking-wider">{label}</p>
+                    <p className="text-2xl font-bold text-slate-900">{value}</p>
+                    {trend && (
+                        <p className={`text-xs mt-1 ${trend > 0 ? 'text-green-500' : 'text-red-500'}`}>
+                            {trend > 0 ? '↑' : '↓'} {Math.abs(trend)}% from last month
+                        </p>
+                    )}
+                </div>
+            </div>
+        );
+
+        // --- Main Views ---
+
+        const Dashboard = ({ products = [], sales = [] }) => {
+            const [timeRange, setTimeRange] = useState('30d');
+            const chartRef = useRef(null);
+            const chartInstance = useRef(null);
+
+            const filterOptions = [
+                { id: '1h', label: 'Last 1 Hour' },
+                { id: '1d', label: 'Last 24 Hours' },
+                { id: '1w', label: 'Last 7 Days' },
+                { id: '30d', label: 'Last 30 Days' },
+                { id: '6m', label: 'Last 6 Months' },
+                { id: '1y', label: 'Last Year' },
+                { id: '10y', label: 'Last 10 Years' }
+            ];
+
+            // KPI Calculations
+            const lowStockCount = products.filter(p => p.currentStock <= p.safetyStock).length;
+
+            const totalMonthlyForecast = products.reduce((sum, p) => sum + (p.predictedMonthlyDemand || 0), 0);
+
+            const avgDailySales = useMemo(() => {
+                if (sales.length === 0) return 0;
+                const totalUnits = sales.reduce((sum, s) => sum + s.quantity, 0);
+
+                // Calculate days range
+                const dates = sales.map(s => new Date(s.date).getTime());
+                const minDate = Math.min(...dates);
+                const maxDate = Math.max(...dates);
+                const diffDays = Math.max(1, Math.ceil((maxDate - minDate) / (1000 * 60 * 60 * 24)));
+
+                return (totalUnits / diffDays).toFixed(1);
+            }, [sales]);
+
+            useEffect(() => {
+                if (!chartRef.current) return;
+
+                const getFilterDate = () => {
+                    const now = new Date();
+                    const d = new Date();
+                    switch (timeRange) {
+                        case '1h': d.setHours(now.getHours() - 1); break;
+                        case '1d': d.setDate(now.getDate() - 1); break;
+                        case '1w': d.setDate(now.getDate() - 7); break;
+                        case '30d': d.setDate(now.getDate() - 30); break;
+                        case '6m': d.setMonth(now.getMonth() - 6); break;
+                        case '1y': d.setFullYear(now.getFullYear() - 1); break;
+                        case '10y': d.setFullYear(now.getFullYear() - 10); break;
+                        default: d.setDate(now.getDate() - 30);
+                    }
+                    return d;
+                };
+
+                const filterDate = getFilterDate();
+                const filteredSales = sales.filter(s => new Date(s.date) >= filterDate);
+
+                const grouped = filteredSales.reduce((acc, s) => {
+                    const label = s.date;
+                    acc[label] = (acc[label] || 0) + s.quantity;
+                    return acc;
+                }, {});
+
+                const sortedLabels = Object.keys(grouped).sort();
+                const dataPoints = sortedLabels.map(l => grouped[l]);
+
+                if (chartInstance.current) chartInstance.current.destroy();
+
+                const ctx = chartRef.current.getContext('2d');
+                chartInstance.current = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels: sortedLabels,
+                        datasets: [{
+                            label: 'Quantity Sold',
+                            data: dataPoints,
+                            borderColor: '#3b82f6',
+                            backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                            fill: true,
+                            tension: 0.4,
+                            pointRadius: 4,
+                            pointBackgroundColor: '#3b82f6',
+                            borderWidth: 2
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: { legend: { display: false } },
+                        scales: {
+                            y: { beginAtZero: true, grid: { color: '#f1f5f9' }, ticks: { stepSize: 1 } },
+                            x: { grid: { display: false } }
+                        }
+                    }
+                });
+
+                return () => { if (chartInstance.current) chartInstance.current.destroy(); };
+            }, [sales, timeRange]);
+
+            return (
+                <div className="space-y-8 animate-in fade-in duration-500">
+                    <div className="flex justify-between items-center">
+                        <h1 className="text-2xl font-bold text-slate-800">Business Overview</h1>
+                        <div className="relative group">
+                            <select
+                                value={timeRange}
+                                onChange={(e) => setTimeRange(e.target.value)}
+                                className="appearance-none bg-white px-4 py-2 pr-10 rounded-lg border border-slate-200 text-sm font-medium shadow-sm hover:bg-slate-50 transition-colors focus:ring-2 focus:ring-primary-500 outline-none cursor-pointer"
+                            >
+                                {filterOptions.map(opt => (
+                                    <option key={opt.id} value={opt.id}>{opt.label}</option>
+                                ))}
+                            </select>
+                            <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400">
+                                <Icon name="chevron-down" className="w-4 h-4" />
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                        <StatCard label="Total Products" value={products.length} icon="package" color="primary" />
+                        <StatCard label="Low Stock Alert" value={lowStockCount} icon="alert-triangle" color={lowStockCount > 0 ? "red" : "primary"} />
+                        <StatCard label="Monthly Forecast" value={`${totalMonthlyForecast} units`} icon="trending-up" color="green" />
+                        <StatCard label="Avg Daily Sales" value={avgDailySales} icon="bar-chart-3" color="accent" />
+                    </div>
+
+                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                        <div className="lg:col-span-2 bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
+                            <h3 className="text-lg font-semibold mb-6">Sales Trend</h3>
+                            <div className="h-64 relative">
+                                {sales.length > 0 ? (
+                                    <canvas ref={chartRef}></canvas>
+                                ) : (
+                                    <div className="h-full flex items-center justify-center text-slate-400 italic">
+                                        Log sales history to view trends.
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
+                            <h3 className="text-lg font-semibold mb-6">Top Predicted Demand</h3>
+                            <div className="space-y-4">
+                                {products
+                                    .filter(p => p.predictedMonthlyDemand)
+                                    .sort((a, b) => b.predictedMonthlyDemand - a.predictedMonthlyDemand)
+                                    .slice(0, 3)
+                                    .map((p, i) => (
+                                        <div key={p.productId} className="flex justify-between items-center p-3 rounded-xl bg-slate-50 hover:bg-slate-100 transition-colors">
+                                            <div className="flex items-center space-x-3">
+                                                <div className="w-10 h-10 rounded-lg bg-primary-100 flex items-center justify-center text-primary-600 font-bold text-xs">
+                                                    #{i + 1}
+                                                </div>
+                                                <div>
+                                                    <p className="text-sm font-semibold text-slate-800">{p.productName}</p>
+                                                    <p className="text-xs text-slate-500">Predicted: {p.predictedMonthlyDemand} units</p>
+                                                </div>
+                                            </div>
+                                            <div className={`text-[10px] font-bold uppercase px-2 py-1 rounded ${p.predictedMonthlyDemand > p.safetyStock * 2 ? 'bg-green-50 text-green-600 ring-1 ring-green-100' : 'bg-blue-50 text-blue-600 ring-1 ring-blue-100'
+                                                }`}>
+                                                {p.predictedMonthlyDemand > p.safetyStock * 2 ? 'High Trend' : 'Steady'}
+                                            </div>
+                                        </div>
+                                    ))}
+                                {products.filter(p => p.predictedMonthlyDemand).length === 0 && (
+                                    <div className="text-center py-10">
+                                        <Icon name="sparkles" className="mx-auto w-8 h-8 text-slate-200 mb-2" />
+                                        <p className="text-xs text-slate-400 font-medium italic">Run predictions to see trends here.</p>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        // --- Feature Components ---
+
+        const Modal = ({ title, isOpen, onClose, children }) => {
+            if (!isOpen) return null;
+            return (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-in fade-in duration-200">
+                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden transform transition-all">
+                        <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center">
+                            <h3 className="font-bold text-slate-800">{title}</h3>
+                            <button onClick={onClose} className="text-slate-400 hover:text-slate-600"><Icon name="x" /></button>
+                        </div>
+                        <div className="p-6">
+                            {children}
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const ProductManager = ({ products, onRefresh }) => {
+            const [isModalOpen, setIsModalOpen] = useState(false);
+            const [editingProduct, setEditingProduct] = useState(null);
+            const [form, setForm] = useState({ productName: '', category: '', currentStock: 0, safetyStock: 0, price: 0 });
+
+            const handleSubmit = async (e) => {
+                e.preventDefault();
+                try {
+                    if (!window.DB) {
+                        throw new Error("Database not initialized. Please refresh the page.");
+                    }
+
+                    if (editingProduct) {
+                        const updatedProduct = {
+                            ...editingProduct,
+                            ...form,
+                            updatedAt: new Date().toISOString()
+                        };
+                        await window.DB.put('products', updatedProduct);
+                        alert('Product updated successfully!');
+                    } else {
+                        const newProduct = {
+                            ...form,
+                            productId: Math.random().toString(36).substr(2, 9),
+                            userId: 'default-user',
+                            createdAt: new Date().toISOString()
+                        };
+                        await window.DB.put('products', newProduct);
+                        alert('Product created successfully!');
+                    }
+                    setIsModalOpen(false);
+                    setEditingProduct(null);
+                    setForm({ productName: '', category: '', currentStock: 0, safetyStock: 0, price: 0 });
+                    onRefresh();
+                } catch (error) {
+                    console.error("Error saving product:", error);
+                    alert(`Failed to save product: ${error.message}`);
+                }
+            };
+
+            const handleDelete = async (productId) => {
+                if (confirm('Are you sure you want to delete this product?')) {
+                    await window.DB.delete('products', productId);
+                    onRefresh();
+                }
+            };
+
+            const handleEdit = (product) => {
+                setEditingProduct(product);
+                setForm({
+                    productName: product.productName,
+                    category: product.category,
+                    currentStock: product.currentStock,
+                    safetyStock: product.safetyStock,
+                    price: product.price || 0
+                });
+                setIsModalOpen(true);
+            };
+
+            const openAddModal = () => {
+                setEditingProduct(null);
+                setForm({ productName: '', category: '', currentStock: 0, safetyStock: 0, price: 0 });
+                setIsModalOpen(true);
+            };
+
+            return (
+                <div className="space-y-6">
+                    <div className="flex justify-between items-center">
+                        <h1 className="text-2xl font-bold text-slate-800">Product Management</h1>
+                        <button
+                            onClick={openAddModal}
+                            className="bg-primary-600 text-white px-4 py-2 rounded-xl font-medium shadow-lg shadow-primary-200 hover:bg-primary-700 transition-all flex items-center space-x-2"
+                        >
+                            <Icon name="plus" />
+                            <span>Add Product</span>
+                        </button>
+                    </div>
+
+                    <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
+                        <table className="w-full text-left">
+                            <thead className="bg-slate-50 border-b border-slate-100">
+                                <tr>
+                                    <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-wider">Product Name</th>
+                                    <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-wider">Category</th>
+                                    <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-wider">Price</th>
+                                    <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-wider">Stock</th>
+                                    <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-wider">Safety Level</th>
+                                    <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-wider">Status</th>
+                                    <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-wider text-right">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100">
+                                {products.length === 0 ? (
+                                    <tr><td colSpan="6" className="px-6 py-10 text-center text-slate-400 italic">No products found.</td></tr>
+                                ) : (
+                                    products.map(p => (
+                                        <tr key={p.productId} className="hover:bg-slate-50 transition-colors group">
+                                            <td className="px-6 py-4 font-medium">{p.productName}</td>
+                                            <td className="px-6 py-4 text-slate-500 text-sm">{p.category}</td>
+                                            <td className="px-6 py-4 font-medium text-slate-900">${(p.price || 0).toFixed(2)}</td>
+                                            <td className="px-6 py-4 font-bold">{p.currentStock}</td>
+                                            <td className="px-6 py-4 text-slate-500">{p.safetyStock}</td>
+                                            <td className="px-6 py-4">
+                                                <span className={`px-2 py-1 rounded-full text-[10px] font-bold uppercase ${p.currentStock <= p.safetyStock ? 'bg-red-50 text-red-600 ring-1 ring-red-100' : 'bg-green-50 text-green-600 ring-1 ring-green-100'
+                                                    }`}>
+                                                    {p.currentStock <= p.safetyStock ? 'Low Stock' : 'Safe'}
+                                                </span>
+                                            </td>
+                                            <td className="px-6 py-4 text-right space-x-2">
+                                                <button onClick={() => handleEdit(p)} className="p-2 text-slate-400 hover:text-primary-600 hover:bg-primary-50 rounded-lg transition-colors opacity-0 group-hover:opacity-100">
+                                                    <Icon name="pencil" className="w-4 h-4" />
+                                                </button>
+                                                <button onClick={() => handleDelete(p.productId)} className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors opacity-0 group-hover:opacity-100">
+                                                    <Icon name="trash" className="w-4 h-4" />
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    ))
+                                )}
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <Modal title={editingProduct ? "Edit Product" : "Add New Product"} isOpen={isModalOpen} onClose={() => { setIsModalOpen(false); setEditingProduct(null); }}>
+                        <form onSubmit={handleSubmit} className="space-y-4">
+                            <div>
+                                <label className="block text-sm font-semibold text-slate-700 mb-1">Product Name</label>
+                                <input required type="text" className="w-full px-4 py-2 rounded-xl border border-slate-200 focus:ring-2 focus:ring-primary-500 outline-none transition-all"
+                                    value={form.productName} onChange={e => setForm({ ...form, productName: e.target.value })} />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-semibold text-slate-700 mb-1">Category</label>
+                                <select className="w-full px-4 py-2 rounded-xl border border-slate-200 focus:ring-2 focus:ring-primary-500 outline-none transition-all"
+                                    value={form.category} onChange={e => setForm({ ...form, category: e.target.value })}>
+                                    <option value="">Select Category</option>
+                                    <option value="Grocery">Grocery</option>
+                                    <option value="Stationery">Stationery</option>
+                                    <option value="Bakery">Bakery</option>
+                                    <option value="Medical">Medical</option>
+                                </select>
+                            </div>
+                            <div className="grid grid-cols-3 gap-4">
+                                <div>
+                                    <label className="block text-sm font-semibold text-slate-700 mb-1">Price ($)</label>
+                                    <input required type="number" step="0.01" className="w-full px-4 py-2 rounded-xl border border-slate-200 focus:ring-2 focus:ring-primary-500 outline-none transition-all"
+                                        value={form.price} onChange={e => setForm({ ...form, price: parseFloat(e.target.value) || 0 })} />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-semibold text-slate-700 mb-1">Current Stock</label>
+                                    <input required type="number" className="w-full px-4 py-2 rounded-xl border border-slate-200 focus:ring-2 focus:ring-primary-500 outline-none transition-all"
+                                        value={form.currentStock} onChange={e => setForm({ ...form, currentStock: parseInt(e.target.value) })} />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-semibold text-slate-700 mb-1">Safety Stock</label>
+                                    <input required type="number" className="w-full px-4 py-2 rounded-xl border border-slate-200 focus:ring-2 focus:ring-primary-500 outline-none transition-all"
+                                        value={form.safetyStock} onChange={e => setForm({ ...form, safetyStock: parseInt(e.target.value) })} />
+                                </div>
+                            </div>
+                            <button type="submit" className="w-full bg-primary-600 text-white py-3 rounded-xl font-bold shadow-lg shadow-primary-200 mt-4 hover:bg-primary-700 transition-all">
+                                {editingProduct ? "Update Product" : "Create Product"}
+                            </button>
+                        </form>
+                    </Modal>
+                </div>
+            );
+        };
+
+        const SalesEntry = ({ products = [], sales = [], onRefresh }) => {
+            const [selectedProduct, setSelectedProduct] = useState('');
+            const [quantity, setQuantity] = useState(0);
+            const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
+            const [subTab, setSubTab] = useState('new');
+
+            const handleSubmit = async (e) => {
+                e.preventDefault();
+                const qty = parseInt(quantity);
+                const prod = products.find(p => p.productId === selectedProduct);
+
+                if (!prod) {
+                    alert('Please select a product.');
+                    return;
+                }
+
+                if (prod.currentStock < qty) {
+                    alert(`Cannot log sale. Insufficient stock for ${prod.productName}. Available: ${prod.currentStock}`);
+                    return;
+                }
+
+                const sale = {
+                    productId: selectedProduct,
+                    userId: 'default-user',
+                    quantity: qty,
+                    date: date,
+                    createdAt: new Date().toISOString()
+                };
+                await window.DB.put('sales', sale);
+
+                // Update product stock safely
+                prod.currentStock -= qty;
+                await window.DB.put('products', prod);
+
+                alert('Sale logged successfully!');
+                setQuantity(0);
+                onRefresh();
+            };
+
+            return (
+                <div className="max-w-4xl mx-auto space-y-6">
+                    <div className="flex items-center justify-between mb-2">
+                        <h1 className="text-2xl font-bold text-slate-800">Sales Management</h1>
+                        <div className="flex bg-slate-200 p-1 rounded-xl">
+                            <button
+                                onClick={() => setSubTab('new')}
+                                className={`px-4 py-2 rounded-lg text-sm font-bold transition-all ${subTab === 'new' ? 'bg-white text-primary-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                            >
+                                New Entry
+                            </button>
+                            <button
+                                onClick={() => setSubTab('history')}
+                                className={`px-4 py-2 rounded-lg text-sm font-bold transition-all ${subTab === 'history' ? 'bg-white text-primary-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                            >
+                                View Logs
+                            </button>
+                        </div>
+                    </div>
+
+                    {subTab === 'new' ? (
+                        <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100 max-w-2xl mx-auto w-full">
+                            <form onSubmit={handleSubmit} className="space-y-6">
+                                <div>
+                                    <label className="block text-sm font-semibold text-slate-700 mb-1">Select Product</label>
+                                    <select required className="w-full px-4 py-2 rounded-xl border border-slate-200 focus:ring-2 focus:ring-primary-500 outline-none transition-all"
+                                        value={selectedProduct} onChange={e => setSelectedProduct(e.target.value)}>
+                                        <option value="">Choose product...</option>
+                                        {products.map(p => <option key={p.productId} value={p.productId}>{p.productName} (Stock: {p.currentStock})</option>)}
+                                    </select>
+                                </div>
+                                <div className="grid grid-cols-2 gap-6">
+                                    <div>
+                                        <label className="block text-sm font-semibold text-slate-700 mb-1">Quantity Sold</label>
+                                        <input required type="number" min="1" max={selectedProduct ? products.find(p => p.productId === selectedProduct)?.currentStock : undefined} className="w-full px-4 py-2 rounded-xl border border-slate-200 focus:ring-2 focus:ring-primary-500 outline-none transition-all"
+                                            value={quantity} onChange={e => setQuantity(e.target.value)} />
+                                    </div>
+                                    <div>
+                                        <label className="block text-sm font-semibold text-slate-700 mb-1">Date</label>
+                                        <input required type="date" className="w-full px-4 py-2 rounded-xl border border-slate-200 focus:ring-2 focus:ring-primary-500 outline-none transition-all"
+                                            value={date} onChange={e => setDate(e.target.value)} />
+                                    </div>
+                                </div>
+                                <button type="submit" className="w-full bg-primary-600 text-white py-4 rounded-xl font-bold shadow-lg shadow-primary-200 hover:bg-primary-700 transition-all flex items-center justify-center space-x-2">
+                                    <Icon name="check-circle" />
+                                    <span>Save Sales Record</span>
+                                </button>
+                            </form>
+                        </div>
+                    ) : (
+                        <SalesHistory sales={sales} products={products} />
+                    )}
+                </div>
+            );
+        };
+
+        const PredictionView = ({ products }) => {
+            const [selectedProduct, setSelectedProduct] = useState('');
+            const [prediction, setPrediction] = useState(null);
+            const [loading, setLoading] = useState(false);
+
+            const handlePredict = async () => {
+                if (!selectedProduct) return;
+                setLoading(true);
+                try {
+                    const sales = await window.DB.getFromIndex('sales', 'productId', selectedProduct);
+                    const prod = products.find(p => p.productId === selectedProduct);
+
+                    const response = await fetch('http://127.0.0.1:8080/predict', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            productId: selectedProduct,
+                            currentStock: prod.currentStock,
+                            safetyStock: prod.safetyStock,
+                            salesHistory: sales.map(s => ({ date: s.date, quantity: s.quantity }))
+                        })
+                    });
+
+                    if (!response.ok) throw new Error('Backend error');
+                    const data = await response.json();
+                    setPrediction(data);
+
+                    // Persist prediction to product record
+                    if (window.DB) {
+                        const updatedProduct = {
+                            ...prod,
+                            predictedMonthlyDemand: data.predictedMonthlyDemand,
+                            lastTrend: data.trend,
+                            predictionRisk: data.riskLevel,
+                            lastPredictedAt: new Date().toISOString()
+                        };
+                        await window.DB.put('products', updatedProduct);
+                    }
+                } catch (err) {
+                    console.error(err);
+                    alert("Failed to get prediction. Ensure backend is running.");
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            return (
+                <div className="space-y-8 max-w-4xl mx-auto">
+                    <div className="flex justify-between items-center">
+                        <h1 className="text-2xl font-bold text-slate-800">Demand Prediction</h1>
+                        <div className="flex space-x-4">
+                            <select
+                                className="px-4 py-2 rounded-xl border border-slate-200 focus:ring-2 focus:ring-primary-500 outline-none"
+                                value={selectedProduct} onChange={e => { setSelectedProduct(e.target.value); setPrediction(null); }}
+                            >
+                                <option value="">Select a product...</option>
+                                {products.map(p => <option key={p.productId} value={p.productId}>{p.productName}</option>)}
+                            </select>
+                            <button
+                                onClick={handlePredict}
+                                disabled={!selectedProduct || loading}
+                                className="bg-primary-600 text-white px-6 py-2 rounded-xl font-bold hover:bg-primary-700 disabled:opacity-50 flex items-center space-x-2 transition-all"
+                            >
+                                {loading ? <Icon name="loader-2" className="animate-spin" /> : <Icon name="sparkles" />}
+                                <span>{loading ? 'Predicting...' : 'Run Prediction'}</span>
+                            </button>
+                        </div>
+                    </div>
+
+                    {prediction ? (
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-8 animate-in slide-in-from-bottom-4 duration-500">
+                            <div className="bg-white p-8 rounded-3xl shadow-sm border border-slate-100 flex flex-col items-center text-center space-y-4">
+                                <div className={`w-20 h-20 rounded-2xl flex items-center justify-center ${prediction.trend === 'increasing' ? 'bg-green-50 text-green-600' :
+                                    prediction.trend === 'decreasing' ? 'bg-red-50 text-red-600' : 'bg-blue-50 text-blue-600'
+                                    }`}>
+                                    <Icon name={prediction.trend === 'increasing' ? 'trending-up' : prediction.trend === 'decreasing' ? 'trending-down' : 'minus'} className="w-10 h-10" />
+                                </div>
+                                <div>
+                                    <h2 className="text-4xl font-black text-slate-900">{prediction.predictedMonthlyDemand}</h2>
+                                    <p className="text-slate-500 font-medium">Predicted Monthly Demand</p>
+                                </div>
+                                <div className="w-full pt-4 border-t border-slate-50 grid grid-cols-2 gap-4">
+                                    <div>
+                                        <p className="text-xs text-slate-400 uppercase font-bold">Daily Avg</p>
+                                        <p className="text-lg font-bold">{prediction.averageDailySales}</p>
+                                    </div>
+                                    <div>
+                                        <p className="text-xs text-slate-400 uppercase font-bold">Trend</p>
+                                        <p className="text-lg font-bold capitalize">{prediction.trend}</p>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="bg-primary-600 p-8 rounded-3xl shadow-xl shadow-primary-100 text-white space-y-6">
+                                <h3 className="text-xl font-bold flex items-center space-x-2">
+                                    <Icon name="shopping-cart" />
+                                    <span>Inventory Action</span>
+                                </h3>
+                                <div className="space-y-2">
+                                    <p className="text-primary-100 text-sm opacity-80 uppercase tracking-widest font-bold">Recommended Reorder</p>
+                                    <p className="text-5xl font-black">{prediction.reorderQuantity} <span className="text-xl opacity-60">units</span></p>
+                                </div>
+                                <div className="bg-white/10 p-4 rounded-2xl flex items-center space-x-4">
+                                    <div className={`p-2 rounded-lg bg-white ${prediction.riskLevel === 'critical' ? 'text-red-600' : 'text-primary-600'}`}>
+                                        <Icon name="shield-alert" />
+                                    </div>
+                                    <div>
+                                        <p className="text-xs font-bold uppercase opacity-80">Risk Status</p>
+                                        <p className="font-bold capitalize">{prediction.riskLevel.replace('_', ' ')}</p>
+                                    </div>
+                                </div>
+                                <p className="text-sm text-primary-50 italic">
+                                    "Based on your last sales, we suggest stocking up {prediction.reorderQuantity} units to avoid {prediction.riskLevel === 'critical' ? 'stock-outs' : 'delays'}."
+                                </p>
+                            </div>
+                        </div>
+                    ) : (
+                        !loading && <div className="bg-white p-20 rounded-3xl border-2 border-dashed border-slate-200 text-center">
+                            <Icon name="search" className="mx-auto w-12 h-12 text-slate-300 mb-4" />
+                            <p className="text-slate-400 font-medium">Select a product and click 'Run Prediction' to see results.</p>
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
+        const ReportsView = ({ products = [] }) => {
+            const chartRef = useRef(null);
+            const chartInstance = useRef(null);
+
+            useEffect(() => {
+                if (!chartRef.current || products.length === 0) return;
+
+                const distribution = products.reduce((acc, p) => {
+                    const value = (p.currentStock || 0) * (p.price || 0);
+                    acc[p.category] = (acc[p.category] || 0) + value;
+                    return acc;
+                }, {});
+
+                const labels = Object.keys(distribution);
+                const data = Object.values(distribution);
+
+                if (chartInstance.current) chartInstance.current.destroy();
+
+                const ctx = chartRef.current.getContext('2d');
+                chartInstance.current = new Chart(ctx, {
+                    type: 'doughnut',
+                    data: {
+                        labels: labels,
+                        datasets: [{
+                            data: data,
+                            backgroundColor: [
+                                '#3b82f6', '#8b5cf6', '#10b981', '#f59e0b', '#ef4444', '#64748b'
+                            ],
+                            borderWidth: 0,
+                            hoverOffset: 10
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: { position: 'bottom', labels: { usePointStyle: true, padding: 20 } },
+                            tooltip: {
+                                callbacks: {
+                                    label: (ctx) => ` $${ctx.raw.toLocaleString()}`
+                                }
+                            }
+                        },
+                        cutout: '70%'
+                    }
+                });
+
+                return () => { if (chartInstance.current) chartInstance.current.destroy(); };
+            }, [products]);
+
+            return (
+                <div className="space-y-8 max-w-5xl mx-auto animate-in fade-in duration-500">
+                    <h1 className="text-2xl font-bold text-slate-800">Analytics & Reports</h1>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                        <div className="bg-white p-8 rounded-3xl shadow-sm border border-slate-100">
+                            <h3 className="text-lg font-bold mb-4">Stock Value Distribution</h3>
+                            <div className="h-64 relative">
+                                {products.some(p => p.price > 0) ? (
+                                    <canvas ref={chartRef}></canvas>
+                                ) : (
+                                    <div className="h-full flex flex-col items-center justify-center text-slate-400 italic space-y-2">
+                                        <Icon name="info" />
+                                        <p>Add prices to products to see value distribution.</p>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                        <div className="bg-white p-8 rounded-3xl shadow-sm border border-slate-100">
+                            <h3 className="text-lg font-bold mb-4">Daily Sales Volume</h3>
+                            <div className="h-64 flex items-center justify-center bg-slate-50 rounded-2xl border border-dashed border-slate-200 text-slate-400 italic">
+                                [Advanced Chart Coming Soon]
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const SalesHistory = ({ sales = [], products = [] }) => {
+            const history = useMemo(() => {
+                return [...sales].sort((a, b) => new Date(b.date) - new Date(a.date)).map(s => {
+                    const product = products.find(p => p.productId === s.productId);
+                    return {
+                        ...s,
+                        productName: product ? product.productName : 'Deleted Product',
+                        category: product ? product.category : 'N/A'
+                    };
+                });
+            }, [sales, products]);
+
+            return (
+                <div className="space-y-6 animate-in fade-in duration-500">
+                    <h1 className="text-2xl font-bold text-slate-800">Sales Record Logs</h1>
+                    <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
+                        <table className="w-full text-left">
+                            <thead className="bg-slate-50 border-b border-slate-100">
+                                <tr>
+                                    <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-wider">Date</th>
+                                    <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-wider">Product Name</th>
+                                    <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-wider">Category</th>
+                                    <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-wider">Quantity</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100">
+                                {history.length === 0 ? (
+                                    <tr><td colSpan="4" className="px-6 py-10 text-center text-slate-400 italic">No sales records found. Log some sales to see them here!</td></tr>
+                                ) : (
+                                    history.map((s, idx) => (
+                                        <tr key={idx} className="hover:bg-slate-50 transition-colors">
+                                            <td className="px-6 py-4 text-sm font-medium text-slate-600">{new Date(s.date).toLocaleDateString()}</td>
+                                            <td className="px-6 py-4 font-semibold text-slate-800">{s.productName}</td>
+                                            <td className="px-6 py-4 text-slate-500 text-sm">{s.category}</td>
+                                            <td className="px-6 py-4 font-bold text-primary-600">{s.quantity} units</td>
+                                        </tr>
+                                    ))
+                                )}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            );
+        };
+
+        const SettingsView = ({ profile, onLogout, onSwitch }) => {
+            const [subTab, setSubTab] = useState('general');
+
+            return (
+                <div className="space-y-8 animate-in fade-in duration-500 max-w-4xl mx-auto pb-20">
+                    <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                        <h1 className="text-3xl font-extrabold text-slate-900 tracking-tight">Settings & Resources</h1>
+                        <div className="flex bg-slate-200 p-1 rounded-2xl w-fit shadow-inner">
+                            <button
+                                onClick={() => setSubTab('general')}
+                                className={`px-6 py-2 rounded-xl text-sm font-bold transition-all ${subTab === 'general' ? 'bg-white text-primary-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                            >
+                                General
+                            </button>
+                            <button
+                                onClick={() => setSubTab('manual')}
+                                className={`px-6 py-2 rounded-xl text-sm font-bold transition-all ${subTab === 'manual' ? 'bg-white text-primary-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                            >
+                                User Manual
+                            </button>
+                            <button
+                                onClick={() => setSubTab('about')}
+                                className={`px-6 py-2 rounded-xl text-sm font-bold transition-all ${subTab === 'about' ? 'bg-white text-primary-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                            >
+                                About
+                            </button>
+                        </div>
+                    </div>
+
+                    {subTab === 'general' && (
+                        <div className="space-y-8 max-w-2xl">
+                            {/* Account Settings */}
+                            <div className="bg-white rounded-3xl shadow-sm border border-slate-100 overflow-hidden">
+                                <div className="p-8 border-b border-slate-50">
+                                    <div className="flex items-center space-x-3 mb-6">
+                                        <div className="p-2 bg-primary-50 rounded-lg text-primary-600">
+                                            <Icon name="user-cog" />
+                                        </div>
+                                        <h3 className="text-lg font-bold text-slate-800">Account Management</h3>
+                                    </div>
+                                    <div className="space-y-3">
+                                        <button onClick={onSwitch} className="w-full flex items-center justify-between p-4 rounded-2xl bg-slate-50 hover:bg-slate-100 transition-all group">
+                                            <div className="flex items-center space-x-3">
+                                                <div className="w-10 h-10 bg-accent/10 rounded-xl flex items-center justify-center text-accent">
+                                                    <Icon name="users" />
+                                                </div>
+                                                <div className="text-left">
+                                                    <p className="text-sm font-bold text-slate-800">Switch Account</p>
+                                                    <p className="text-xs text-slate-400">Currently as {profile.name}</p>
+                                                </div>
+                                            </div>
+                                            <Icon name="chevron-right" className="w-4 h-4 text-slate-300 group-hover:translate-x-1 transition-transform" />
+                                        </button>
+                                        <button onClick={onLogout} className="w-full flex items-center justify-between p-4 rounded-2xl bg-red-50 hover:bg-red-100 transition-all group">
+                                            <div className="flex items-center space-x-3">
+                                                <div className="w-10 h-10 bg-red-500 rounded-xl flex items-center justify-center text-white">
+                                                    <Icon name="log-out" />
+                                                </div>
+                                                <div className="text-left">
+                                                    <p className="text-sm font-bold text-red-600">Log Out</p>
+                                                    <p className="text-xs text-red-400">Securely exit your session</p>
+                                                </div>
+                                            </div>
+                                            <Icon name="chevron-right" className="w-4 h-4 text-red-200 group-hover:translate-x-1 transition-transform" />
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                            <div className="bg-white rounded-3xl p-8 border border-slate-100 flex items-center justify-between">
+                                <p className="text-xs text-slate-400 font-medium tracking-wide">
+                                    MADE IN INDIA • VER 2.4.0
+                                </p>
+                                <div className="flex space-x-2">
+                                    <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>
+                                    <p className="text-[10px] font-bold text-slate-500 uppercase">System Optimal</p>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {subTab === 'manual' && (
+                        <div className="space-y-8 animate-in slide-in-from-bottom-4 duration-500">
+                            {[
+                                {
+                                    title: "1. Managing Products",
+                                    icon: "package",
+                                    content: "Start by clicking 'Add Product' in the Products tab. Ensure you set an accurate 'Safety Stock' level; this is the minimum amount of stock you want to keep before getting an alert."
+                                },
+                                {
+                                    title: "2. Logging Daily Sales",
+                                    icon: "plus-circle",
+                                    content: "The AI works best with consistent data. Every day, use the 'Log Sales' page to record items sold. This historical data is what fuels the prediction engine."
+                                },
+                                {
+                                    title: "3. Running Predictions",
+                                    icon: "trending-up",
+                                    content: "Navigate to 'Predictions' and select a product. Our backend AI analyzes your sales trends, seasonality, and stock levels to recommend exactly how much you should reorder."
+                                },
+                                {
+                                    title: "4. Dashboard & Reports",
+                                    icon: "layout-dashboard",
+                                    content: "The Dashboard gives you a 30,000-ft view. Use the 'Reports' tab to see high-level analytics, such as which category holds most of your capital (Stock Value Distribution)."
+                                }
+                            ].map((s, idx) => (
+                                <div key={idx} className="bg-white p-8 rounded-3xl shadow-sm border border-slate-100 hover:shadow-md transition-shadow group">
+                                    <div className="flex items-center space-x-6">
+                                        <div className="w-14 h-14 rounded-2xl bg-primary-50 flex items-center justify-center text-primary-600 group-hover:scale-110 transition-transform">
+                                            <Icon name={s.icon} />
+                                        </div>
+                                        <div>
+                                            <h3 className="text-xl font-bold text-slate-800 mb-1">{s.title}</h3>
+                                            <p className="text-slate-500 text-sm leading-relaxed max-w-xl">{s.content}</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            ))}
+                            <div className="bg-primary-600 rounded-3xl p-8 text-white shadow-xl shadow-primary-200">
+                                <div className="flex items-center justify-between">
+                                    <div className="space-y-2">
+                                        <div className="flex items-center space-x-4 mb-2">
+                                            <Icon name="help-circle" className="w-8 h-8" />
+                                            <h3 className="text-2xl font-bold">Need More Help?</h3>
+                                        </div>
+                                        <p className="text-primary-100 font-medium max-w-md">If you encounter any issues with predictions or database syncing, try clearing your browser cache or re-logging your latest sales records.</p>
+                                    </div>
+                                    <button className="bg-white text-primary-600 px-8 py-4 rounded-2xl font-bold hover:bg-primary-50 transition-colors shadow-lg">Contact Support</button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {subTab === 'about' && (
+                        <div className="bg-white rounded-3xl shadow-sm border border-slate-100 p-8 space-y-8">
+                            <div className="flex items-center space-x-3">
+                                <div className="p-2 bg-primary-50 rounded-lg text-primary-600">
+                                    <Icon name="sparkles" />
+                                </div>
+                                <h3 className="text-xl font-bold text-slate-800">The Invedictor Story</h3>
+                            </div>
+
+                            <div className="space-y-6 text-slate-600 leading-relaxed text-sm">
+                                <p className="text-base text-slate-700 font-medium">
+                                    We believe that advanced AI shouldn't just be for big corporations. Invedictor was built to give every shop owner the super-powers they need to grow.
+                                </p>
+
+                                <div className="space-y-4">
+                                    <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">Key Features & Capabilities</p>
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                        <div className="flex items-start space-x-4 p-4 rounded-2xl bg-slate-50 border border-slate-100 group hover:border-primary-200 transition-colors">
+                                            <div className="p-2 bg-white rounded-xl shadow-sm group-hover:text-primary-600 transition-colors">
+                                                <Icon name="brain-circuit" className="w-5 h-5" />
+                                            </div>
+                                            <div>
+                                                <p className="font-bold text-slate-800 text-sm">AI Demand Forecasting</p>
+                                                <p className="text-xs text-slate-500">Predict future sales volume with 95% accuracy using historical trend analysis.</p>
+                                            </div>
+                                        </div>
+                                        <div className="flex items-start space-x-4 p-4 rounded-2xl bg-slate-50 border border-slate-100 group hover:border-accent-200 transition-colors">
+                                            <div className="p-2 bg-white rounded-xl shadow-sm group-hover:text-accent transition-colors">
+                                                <Icon name="shield-check" className="w-5 h-5" />
+                                            </div>
+                                            <div>
+                                                <p className="font-bold text-slate-800 text-sm">Privacy-First Data</p>
+                                                <p className="text-xs text-slate-500">Your data never leaves your device. Everything is stored locally for maximum security.</p>
+                                            </div>
+                                        </div>
+                                        <div className="flex items-start space-x-4 p-4 rounded-2xl bg-slate-50 border border-slate-100 group hover:border-green-200 transition-colors">
+                                            <div className="p-2 bg-white rounded-xl shadow-sm group-hover:text-green-600 transition-colors">
+                                                <Icon name="bar-chart-4" className="w-5 h-5" />
+                                            </div>
+                                            <div>
+                                                <p className="font-bold text-slate-800 text-sm">Inventory Analytics</p>
+                                                <p className="text-xs text-slate-500">Visualize your stock value distribution and identify high-performing categories.</p>
+                                            </div>
+                                        </div>
+                                        <div className="flex items-start space-x-4 p-4 rounded-2xl bg-slate-50 border border-slate-100 group hover:border-amber-200 transition-colors">
+                                            <div className="p-2 bg-white rounded-xl shadow-sm group-hover:text-amber-600 transition-colors">
+                                                <Icon name="bell-ring" className="w-5 h-5" />
+                                            </div>
+                                            <div>
+                                                <p className="font-bold text-slate-800 text-sm">Smart Alerts</p>
+                                                <p className="text-xs text-slate-500">Automated safety-stock monitoring that warns you before items go out of stock.</p>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div className="pt-4 border-t border-slate-100 flex items-center justify-between">
+                                    <p className="text-xs text-slate-400 font-medium tracking-wide">
+                                        MADE IN INDIA • VER 2.4.0
+                                    </p>
+                                    <div className="flex space-x-2">
+                                        <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>
+                                        <p className="text-[10px] font-bold text-slate-500 uppercase">System Optimal</p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
+
+        const AuthOverlay = ({ onLogin }) => (
+            <div className="fixed inset-0 bg-slate-50 z-[100] flex items-center justify-center p-6">
+                <div className="max-w-md w-full text-center space-y-10 animate-in zoom-in duration-700">
+                    <div className="inline-flex w-24 h-24 bg-primary-600 rounded-3xl items-center justify-center text-white shadow-2xl shadow-primary-200 rotate-12 hover:rotate-0 transition-transform duration-500">
+                        <Icon name="sparkles" className="w-12 h-12" />
+                    </div>
+                    <div>
+                        <h1 className="text-4xl font-extrabold text-slate-900 mb-4 tracking-tight">Welcome Back</h1>
+                        <p className="text-slate-500">Your inventory predictions are ready for review. Access your dashboard securely.</p>
+                    </div>
+                    <button
+                        onClick={onLogin}
+                        className="w-full py-4 bg-primary-600 text-white rounded-2xl font-bold text-lg shadow-xl shadow-primary-200 hover:bg-primary-700 hover:scale-[1.02] active:scale-[0.98] transition-all"
+                    >
+                        Launch Dashboard
+                    </button>
+                    <div className="pt-6 text-xs text-slate-400 font-medium">
+                        Secure End-to-End Encryption Enabled
+                    </div>
+                </div>
+            </div>
+        );
+
+        // --- App Shell ---
+
+        function App() {
+            const [activeTab, setActiveTab] = useState('dashboard');
+            const [products, setProducts] = useState([]);
+            const [sales, setSales] = useState([]);
+            const [loading, setLoading] = useState(true);
+            const [isLoggedIn, setIsLoggedIn] = useState(true);
+            const [profile, setProfile] = useState({ name: 'Shop Admin', role: 'Owner', shopName: 'My Forecastify Shop' });
+            const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
+
+            const refreshData = async () => {
+                if (window.DB) {
+                    const [p, s] = await Promise.all([
+                        window.DB.getAll('products'),
+                        window.DB.getAll('sales')
+                    ]);
+                    setProducts(p);
+                    setSales(s);
+                    const userData = await window.DB.get('users', 'default-user');
+                    if (userData) setProfile(userData);
+                }
+            };
+
+            const handleLogout = () => {
+                setIsLoggedIn(false);
+                setActiveTab('dashboard');
+                setIsProfileModalOpen(false);
+            };
+
+            const handleSwitchAccount = async () => {
+                const newName = prompt("Enter the name of the account you want to switch to:", "Regional Manager");
+                if (newName) {
+                    const newProfile = { ...profile, name: newName, role: 'Administrator', userId: 'default-user' };
+                    setProfile(newProfile);
+                    await window.DB.put('users', newProfile);
+                    setIsProfileModalOpen(false);
+                    alert(`Switched to account: ${newName}`);
+                }
+            };
+
+            const handleProfileUpdate = async (e) => {
+                e.preventDefault();
+                const updatedProfile = { ...profile, userId: 'default-user' };
+                await window.DB.put('users', updatedProfile);
+                setIsProfileModalOpen(false);
+                refreshData();
+            };
+
+            useEffect(() => {
+                const cleanupAndLoad = async () => {
+                    let attempts = 0;
+                    while (!window.DB && attempts < 20) {
+                        await new Promise(r => setTimeout(r, 100));
+                        attempts++;
+                    }
+
+                    if (window.DB) {
+                        // Cleanup negative stock
+                        const allProducts = await window.DB.getAll('products');
+                        const negativeProducts = allProducts.filter(p => p.currentStock < 0);
+                        if (negativeProducts.length > 0) {
+                            for (const p of negativeProducts) {
+                                p.currentStock = 0;
+                                await window.DB.put('products', p);
+                            }
+                        }
+                        await refreshData();
+                    } else {
+                        console.error("Database failed to initialize after 2 seconds.");
+                    }
+                    setLoading(false);
+                };
+                cleanupAndLoad();
+            }, []);
+
+            const renderContent = () => {
+                switch (activeTab) {
+                    case 'dashboard': return <Dashboard products={products} sales={sales} />;
+                    case 'products': return <ProductManager products={products} onRefresh={refreshData} />;
+                    case 'sales': return <SalesEntry products={products} sales={sales} onRefresh={refreshData} />;
+                    case 'predictions': return <PredictionView products={products} />;
+                    case 'reports': return <ReportsView products={products} />;
+                    case 'settings': return <SettingsView profile={profile} onLogout={handleLogout} onSwitch={handleSwitchAccount} />;
+                    default: return <div className="text-slate-500 italic">Coming Soon...</div>;
+                }
+            };
+
+            if (loading) return <div className="h-screen flex items-center justify-center"><div className="animate-spin text-primary-600"><Icon name="loader-2" className="w-10 h-10" /></div></div>;
+
+            return (
+                <div className="flex min-h-screen bg-slate-50">
+                    {/* Sidebar */}
+                    <aside className="w-72 bg-slate-50 border-r border-slate-200 p-6 flex flex-col fixed h-full">
+                        <div className="flex items-center space-x-3 px-2 mb-10">
+                            <div className="w-10 h-10 bg-primary-600 rounded-xl flex items-center justify-center text-white shadow-lg shadow-primary-200">
+                                <Icon name="sparkles" />
+                            </div>
+                            <span className="text-xl font-bold tracking-tight text-slate-800">Invedictor</span>
+                        </div>
+
+                        <nav className="flex-1 space-y-2">
+                            <SidebarItem icon="layout-dashboard" label="Dashboard" id="dashboard" active={activeTab === 'dashboard'} onClick={setActiveTab} />
+                            <SidebarItem icon="package" label="Products" id="products" active={activeTab === 'products'} onClick={setActiveTab} />
+                            <SidebarItem icon="plus-circle" label="Log Sales" id="sales" active={activeTab === 'sales'} onClick={setActiveTab} />
+                            <SidebarItem icon="trending-up" label="Predictions" id="predictions" active={activeTab === 'predictions'} onClick={setActiveTab} />
+                            <SidebarItem icon="file-text" label="Reports" id="reports" active={activeTab === 'reports'} onClick={setActiveTab} />
+                        </nav>
+
+                        <div className="mt-auto space-y-2 pt-6 border-t border-slate-200">
+                            <SidebarItem icon="settings" label="Settings" id="settings" active={activeTab === 'settings'} onClick={setActiveTab} />
+                            <div className="px-4 py-4 rounded-xl bg-slate-100 border border-slate-200 text-xs">
+                                <p className="font-bold text-slate-600 mb-1">PRO PLAN</p>
+                                <p className="text-slate-400">Offline Enabled</p>
+                            </div>
+                        </div>
+                    </aside>
+
+                    {/* Main Content */}
+                    <main className="flex-1 ml-72 p-10">
+                        <header className="flex justify-between items-center mb-8 space-x-6">
+                            <div className="flex-1">
+                                <h2 className="text-primary-600 font-bold text-sm tracking-widest uppercase">{profile.shopName}</h2>
+                            </div>
+                            <div className="flex items-center space-x-6">
+                                <button className="text-slate-400 hover:text-slate-600 transition-colors"><Icon name="bell" /></button>
+                                <button
+                                    onClick={() => setIsProfileModalOpen(true)}
+                                    className="flex items-center space-x-3 border-l border-slate-200 pl-6 hover:bg-slate-100 p-2 rounded-xl transition-all group"
+                                >
+                                    <div className="text-right">
+                                        <p className="text-sm font-bold text-slate-800 group-hover:text-primary-600">{profile.name}</p>
+                                        <p className="text-xs text-slate-400">{profile.role}</p>
+                                    </div>
+                                    <div className="w-10 h-10 bg-accent rounded-xl flex items-center justify-center text-white font-bold shadow-lg shadow-accent/20 group-hover:scale-105 transition-transform">
+                                        {profile.name.split(' ').map(n => n[0]).join('').toUpperCase()}
+                                    </div>
+                                </button>
+                            </div>
+                        </header>
+
+                        <div className="max-w-6xl mx-auto">
+                            {renderContent()}
+                        </div>
+
+                        {/* Profile Modal */}
+                        <Modal title="Edit Profile" isOpen={isProfileModalOpen} onClose={() => setIsProfileModalOpen(false)}>
+                            <form onSubmit={handleProfileUpdate} className="space-y-4">
+                                <div>
+                                    <label className="block text-sm font-semibold text-slate-700 mb-1">Shop Name</label>
+                                    <input required type="text" className="w-full px-4 py-2 rounded-xl border border-slate-200 focus:ring-2 focus:ring-primary-500 outline-none transition-all"
+                                        value={profile.shopName} onChange={e => setProfile({ ...profile, shopName: e.target.value })} />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-semibold text-slate-700 mb-1">Your Name</label>
+                                    <input required type="text" className="w-full px-4 py-2 rounded-xl border border-slate-200 focus:ring-2 focus:ring-primary-500 outline-none transition-all"
+                                        value={profile.name} onChange={e => setProfile({ ...profile, name: e.target.value })} />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-semibold text-slate-700 mb-1">Role</label>
+                                    <input required type="text" className="w-full px-4 py-2 rounded-xl border border-slate-200 focus:ring-2 focus:ring-primary-500 outline-none transition-all"
+                                        value={profile.role} onChange={e => setProfile({ ...profile, role: e.target.value })} />
+                                </div>
+                                <button type="submit" className="w-full bg-primary-600 text-white py-3 rounded-xl font-bold shadow-lg shadow-primary-200 mt-4 hover:bg-primary-700 transition-all">
+                                    Save Profile
+                                </button>
+                            </form>
+                            <div className="pt-6 border-t border-slate-100 mt-6 space-y-3">
+                                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest text-center">Account Actions</p>
+                                <div className="grid grid-cols-2 gap-3">
+                                    <button onClick={handleSwitchAccount} className="flex items-center justify-center space-x-2 py-3 px-4 rounded-xl border border-slate-200 text-slate-600 font-bold text-sm hover:bg-slate-50 transition-all">
+                                        <Icon name="users" className="w-4 h-4" />
+                                        <span>Switch</span>
+                                    </button>
+                                    <button onClick={handleLogout} className="flex items-center justify-center space-x-2 py-3 px-4 rounded-xl bg-red-50 text-red-600 font-bold text-sm hover:bg-red-100 transition-all">
+                                        <Icon name="log-out" className="w-4 h-4" />
+                                        <span>Log Out</span>
+                                    </button>
+                                </div>
+                            </div>
+                        </Modal>
+                        {!isLoggedIn && <AuthOverlay onLogin={() => setIsLoggedIn(true)} />}
+                    </main>
+
+                    {/* AI Assistant */}
+                    <AIAssistant products={products} sales={sales} />
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+
+</html>
