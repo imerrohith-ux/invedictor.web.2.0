@@ -1,4 +1,3 @@
-# invedictor.web.2.0
 # 📦 Invedictor Web 2.0
 
 **Invedictor** is a modern, web-based **Inventory Demand Prediction & Analysis System** designed to help businesses, students, and analysts understand inventory trends and make smarter stock decisions.
